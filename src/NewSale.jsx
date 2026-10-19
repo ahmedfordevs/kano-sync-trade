@@ -1,16 +1,16 @@
 import React, { useState } from 'react';
+import { db } from './db';
 
-export default function NewSale({ savedSales, setSavedSales, products, setProducts }) {
+export default function NewSale({ savedSales, products }) {
   const [selectedProductId, setSelectedProductId] = useState('');
   const [customerName, setCustomerName] = useState('');
   const [itemName, setItemName] = useState('');
   const [price, setPrice] = useState('');
   const [quantity, setQuantity] = useState(1);
-  const [paymentMethod, setPaymentMethod] = useState('cash');
-  
-  // Search state for filtering past transactions
+  const [paymentMethod, setPaymentMethod] = useState('cash'); // 'cash', 'transfer', 'bashi'
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Handle dropdown selection from inventory
   const handleProductSelect = (e) => {
     const prodId = e.target.value;
     setSelectedProductId(prodId);
@@ -30,7 +30,8 @@ export default function NewSale({ savedSales, setSavedSales, products, setProduc
     }
   };
 
-  const handleSaveSale = (e) => {
+  // Save sale asynchronously to IndexedDB using Dexie
+  const handleSaveSale = async (e) => {
     e.preventDefault();
 
     if (!itemName || !price) {
@@ -41,47 +42,48 @@ export default function NewSale({ savedSales, setSavedSales, products, setProduc
     const unitPrice = parseFloat(price);
     const totalAmount = unitPrice * parseInt(quantity, 10);
 
-    const newSale = {
-      id: Date.now(),
-      customerName: customerName || 'General Customer',
-      itemName: `${itemName} (x${quantity})`,
-      price: totalAmount,
-      paymentMethod,
-      date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      synced: false
-    };
-
-    if (selectedProductId && selectedProductId !== 'custom') {
-      const updatedProducts = products.map((prod) => {
-        if (prod.id.toString() === selectedProductId) {
-          const newStock = Math.max(0, prod.stock - parseInt(quantity, 10));
-          return { ...prod, stock: newStock };
-        }
-        return prod;
+    try {
+      // 1. Add sale record to Dexie IndexedDB table
+      await db.sales.add({
+        customerName: customerName || 'General Customer',
+        itemName: `${itemName} (x${quantity})`,
+        price: totalAmount,
+        paymentMethod,
+        date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        synced: false
       });
 
-      setProducts(updatedProducts);
-      localStorage.setItem('kano_products', JSON.stringify(updatedProducts));
+      // 2. Automatically deduct stock from Dexie products table if selected from catalog
+      if (selectedProductId && selectedProductId !== 'custom') {
+        const prodIdNum = parseInt(selectedProductId, 10);
+        const currentProd = products.find((p) => p.id === prodIdNum);
+        if (currentProd) {
+          const newStock = Math.max(0, currentProd.stock - parseInt(quantity, 10));
+          await db.products.update(prodIdNum, { stock: newStock });
+        }
+      }
+
+      // Reset form inputs
+      setCustomerName('');
+      setItemName('');
+      setPrice('');
+      setQuantity(1);
+      setSelectedProductId('');
+      setPaymentMethod('cash');
+      alert('✅ An adana tallan sannan an rage stock a indexedDB!');
+    } catch (error) {
+      console.error('Kuskure wajen adana tallace:', error);
+      alert('An samu matsala wajen adanawa.');
     }
-
-    const updatedSales = [newSale, ...savedSales];
-    setSavedSales(updatedSales);
-    localStorage.setItem('kano_sales', JSON.stringify(updatedSales));
-
-    setCustomerName('');
-    setItemName('');
-    setPrice('');
-    setQuantity(1);
-    setSelectedProductId('');
-    setPaymentMethod('cash');
   };
 
+  // Calculate totals
   const totalSalesAmount = savedSales.reduce((acc, sale) => acc + sale.price, 0);
   const totalBashiAmount = savedSales
     .filter((sale) => sale.paymentMethod === 'bashi')
     .reduce((acc, sale) => acc + sale.price, 0);
 
-  // Live filter for transaction records
+  // Live filter for transactions
   const filteredSales = savedSales.filter((sale) => {
     const query = searchQuery.toLowerCase();
     return (
@@ -91,6 +93,7 @@ export default function NewSale({ savedSales, setSavedSales, products, setProduc
     );
   });
 
+  // Generate WhatsApp Receipt
   const getWhatsAppLink = (sale) => {
     let message =
       `Sannu ${sale.customerName}! Nagode da sayayya a shagonmu.\n\n` +
@@ -109,7 +112,7 @@ export default function NewSale({ savedSales, setSavedSales, products, setProduc
 
   return (
     <div className="space-y-4">
-      {/* Clean Dashboard KPI Cards */}
+      {/* Dashboard KPI Cards */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-white p-4 rounded-2xl shadow-xs border border-slate-100">
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Jimillar Tallace</p>
@@ -136,7 +139,7 @@ export default function NewSale({ savedSales, setSavedSales, products, setProduc
       <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-100">
         <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider mb-4 flex items-center justify-between">
           <span>Shigar da Sabuwar Sayayya</span>
-          <span className="text-[10px] text-emerald-600 font-normal">Instant POS</span>
+          <span className="text-[10px] text-emerald-600 font-normal">IndexedDB Offline POS</span>
         </h2>
 
         <form onSubmit={handleSaveSale} className="space-y-3.5">
@@ -247,7 +250,6 @@ export default function NewSale({ savedSales, setSavedSales, products, setProduc
             Fayil din Sayayya ({filteredSales.length})
           </h3>
 
-          {/* Transaction Search Bar */}
           <div className="relative">
             <input
               type="text"
@@ -262,7 +264,7 @@ export default function NewSale({ savedSales, setSavedSales, products, setProduc
         {filteredSales.length === 0 ? (
           <div className="text-center py-8">
             <p className="text-xs text-slate-400">
-              {searchQuery ? 'Babu sakamakon bincike (No results found).' : 'Babu sayayya da aka adana ba tukuna.'}
+              {searchQuery ? 'Babu sakamakon bincike.' : 'Babu sayayya da aka adana ba tukuna.'}
             </p>
           </div>
         ) : (
