@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { db } from './db';
+import { db, settleBashiCredit } from './db';
 
 export default function NewSale({ savedSales, products }) {
   const [selectedProductId, setSelectedProductId] = useState('');
@@ -10,7 +10,10 @@ export default function NewSale({ savedSales, products }) {
   const [paymentMethod, setPaymentMethod] = useState('cash'); // 'cash', 'transfer', 'bashi'
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Handle dropdown selection from inventory
+  // Settlement Modal State
+  const [selectedBashiSale, setSelectedBashiSale] = useState(null);
+  const [settlementMethod, setSettlementMethod] = useState('cash');
+
   const handleProductSelect = (e) => {
     const prodId = e.target.value;
     setSelectedProductId(prodId);
@@ -30,7 +33,6 @@ export default function NewSale({ savedSales, products }) {
     }
   };
 
-  // Save sale asynchronously to IndexedDB using Dexie
   const handleSaveSale = async (e) => {
     e.preventDefault();
 
@@ -43,7 +45,6 @@ export default function NewSale({ savedSales, products }) {
     const totalAmount = unitPrice * parseInt(quantity, 10);
 
     try {
-      // 1. Add sale record to Dexie IndexedDB table
       await db.sales.add({
         customerName: customerName || 'General Customer',
         itemName: `${itemName} (x${quantity})`,
@@ -53,7 +54,6 @@ export default function NewSale({ savedSales, products }) {
         synced: false
       });
 
-      // 2. Automatically deduct stock from Dexie products table if selected from catalog
       if (selectedProductId && selectedProductId !== 'custom') {
         const prodIdNum = parseInt(selectedProductId, 10);
         const currentProd = products.find((p) => p.id === prodIdNum);
@@ -63,27 +63,37 @@ export default function NewSale({ savedSales, products }) {
         }
       }
 
-      // Reset form inputs
       setCustomerName('');
       setItemName('');
       setPrice('');
       setQuantity(1);
       setSelectedProductId('');
       setPaymentMethod('cash');
-      alert('✅ An adana tallan sannan an rage stock a indexedDB!');
     } catch (error) {
       console.error('Kuskure wajen adana tallace:', error);
-      alert('An samu matsala wajen adanawa.');
     }
   };
 
-  // Calculate totals
+  // Execute Credit Settlement
+  const handleConfirmSettlement = async () => {
+    if (!selectedBashiSale) return;
+
+    try {
+      await settleBashiCredit(selectedBashiSale.id, settlementMethod);
+      setSelectedBashiSale(null);
+      alert('✅ An karkare bashin cikin nasara! (Credit settled successfully)');
+    } catch (error) {
+      console.error('Kuskure wajen biyan bashi:', error);
+    }
+  };
+
+  // KPI Calculations
   const totalSalesAmount = savedSales.reduce((acc, sale) => acc + sale.price, 0);
   const totalBashiAmount = savedSales
     .filter((sale) => sale.paymentMethod === 'bashi')
     .reduce((acc, sale) => acc + sale.price, 0);
 
-  // Live filter for transactions
+  // Live Filter
   const filteredSales = savedSales.filter((sale) => {
     const query = searchQuery.toLowerCase();
     return (
@@ -93,16 +103,21 @@ export default function NewSale({ savedSales, products }) {
     );
   });
 
-  // Generate WhatsApp Receipt
   const getWhatsAppLink = (sale) => {
     let message =
       `Sannu ${sale.customerName}! Nagode da sayayya a shagonmu.\n\n` +
       `📦 *Kaya:* ${sale.itemName}\n` +
       `💰 *Jimillar Kudi:* ₦${sale.price.toLocaleString()}\n` +
-      `💳 *Hanyar Biya:* ${sale.paymentMethod.toUpperCase()}\n`;
+      `💳 *Hanyar Biya:* ${
+        sale.paymentMethod === 'bashi-paid'
+          ? `BASHI (AN BIYA VIA ${sale.settledMethod?.toUpperCase() || 'CASH'})`
+          : sale.paymentMethod.toUpperCase()
+      }\n`;
 
     if (sale.paymentMethod === 'bashi') {
-      message += `⚠️ *Lura:* Wannan bashin ne (Credit Sale).\n`;
+      message += `⚠️ *Lura:* Wannan bashin ne (Pending Credit).\n`;
+    } else if (sale.paymentMethod === 'bashi-paid') {
+      message += `✅ *Lura:* An kammala biyan wannan bashin. Nagode!\n`;
     }
 
     message += `\nSai mun sake ganin ku! 🙏`;
@@ -112,7 +127,7 @@ export default function NewSale({ savedSales, products }) {
 
   return (
     <div className="space-y-4">
-      {/* Dashboard KPI Cards */}
+      {/* KPI Cards */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-white p-4 rounded-2xl shadow-xs border border-slate-100">
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Jimillar Tallace</p>
@@ -120,7 +135,7 @@ export default function NewSale({ savedSales, products }) {
             ₦{totalSalesAmount.toLocaleString()}
           </p>
           <span className="inline-block mt-1 text-[10px] font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
-            {savedSales.length} Total Sales
+            {savedSales.length} Total Transactions
           </span>
         </div>
 
@@ -130,12 +145,12 @@ export default function NewSale({ savedSales, products }) {
             ₦{totalBashiAmount.toLocaleString()}
           </p>
           <span className="inline-block mt-1 text-[10px] font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
-            Pending Credit
+            Pending Balance
           </span>
         </div>
       </div>
 
-      {/* New Sale Input Form */}
+      {/* POS Input Form */}
       <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-100">
         <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider mb-4 flex items-center justify-between">
           <span>Shigar da Sabuwar Sayayya</span>
@@ -243,7 +258,7 @@ export default function NewSale({ savedSales, products }) {
         </form>
       </div>
 
-      {/* Recent Transactions List with Live Search */}
+      {/* Transactions List */}
       <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-100">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
           <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">
@@ -279,16 +294,33 @@ export default function NewSale({ savedSales, products }) {
                   <p className="text-[11px] text-slate-400 mt-0.5">
                     {sale.customerName} • {sale.date}
                   </p>
-                  <span
-                    className={`inline-block mt-1.5 text-[10px] px-2 py-0.5 rounded-full font-semibold ${
-                      sale.paymentMethod === 'bashi'
-                        ? 'bg-amber-100 text-amber-700'
-                        : 'bg-emerald-100 text-emerald-700'
-                    }`}
-                  >
-                    {sale.paymentMethod.toUpperCase()}
-                  </span>
+                  
+                  {/* Status Badges */}
+                  <div className="flex items-center space-x-2 mt-1.5">
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                        sale.paymentMethod === 'bashi'
+                          ? 'bg-amber-100 text-amber-700'
+                          : sale.paymentMethod === 'bashi-paid'
+                          ? 'bg-blue-100 text-blue-700'
+                          : 'bg-emerald-100 text-emerald-700'
+                      }`}
+                    >
+                      {sale.paymentMethod === 'bashi-paid' ? 'BASHI (PAID)' : sale.paymentMethod.toUpperCase()}
+                    </span>
+
+                    {/* Settle Debt Button for pending credit */}
+                    {sale.paymentMethod === 'bashi' && (
+                      <button
+                        onClick={() => setSelectedBashiSale(sale)}
+                        className="text-[10px] bg-amber-600 hover:bg-amber-700 text-white font-bold px-2 py-0.5 rounded-full transition shadow-xs"
+                      >
+                        💳 Biya Bashi
+                      </button>
+                    )}
+                  </div>
                 </div>
+
                 <div className="text-right">
                   <p className="font-extrabold text-xs text-slate-900">
                     ₦{sale.price.toLocaleString()}
@@ -307,6 +339,52 @@ export default function NewSale({ savedSales, products }) {
           </div>
         )}
       </div>
+
+      {/* Credit Settlement Confirmation Modal */}
+      {selectedBashiSale && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-xl border border-slate-100 space-y-4">
+            <h3 className="font-extrabold text-slate-800 text-sm">
+              Kammala Biyan Bashi (Settle Credit)
+            </h3>
+            
+            <div className="bg-slate-50 p-3 rounded-xl text-xs space-y-1">
+              <p><span className="text-slate-400">Aboki:</span> <strong>{selectedBashiSale.customerName}</strong></p>
+              <p><span className="text-slate-400">Kaya:</span> {selectedBashiSale.itemName}</p>
+              <p><span className="text-slate-400">Adadin Kudi:</span> <strong className="text-amber-600">₦{selectedBashiSale.price.toLocaleString()}</strong></p>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                Zaɓi Hanyar Biyan Kuɗi
+              </label>
+              <select
+                value={settlementMethod}
+                onChange={(e) => setSettlementMethod(e.target.value)}
+                className="w-full border border-slate-200 rounded-xl p-2.5 text-xs bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+              >
+                <option value="cash">Cash (Kuɗi a Hannu)</option>
+                <option value="transfer">Bank Transfer</option>
+              </select>
+            </div>
+
+            <div className="flex space-x-2 pt-2">
+              <button
+                onClick={() => setSelectedBashiSale(null)}
+                className="w-1/2 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-2.5 rounded-xl text-xs transition"
+              >
+                Soke (Cancel)
+              </button>
+              <button
+                onClick={handleConfirmSettlement}
+                className="w-1/2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-xl text-xs transition shadow-md shadow-emerald-600/20"
+              >
+                Tabbatar Biya
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
